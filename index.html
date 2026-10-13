@@ -110,6 +110,8 @@ body[data-mode="kids"] .hero h1,body[data-mode="kids"] .sec,body[data-mode="kids
 .lcard .nm{font-size:14px;font-weight:700;line-height:1.25}
 .lcard .st{font-size:13px;color:var(--muted);margin-top:4px}
 .lcard.done .st{color:var(--ok);font-weight:700}
+.lcard.locked{opacity:.5;cursor:not-allowed}
+.lcard.locked:hover{border-color:var(--line)}
 .lcard.next{border:2px solid var(--accent);padding:11px 13px}
 .stars{color:var(--mark);text-shadow:0 1px 0 var(--key-shadow);letter-spacing:1px}
 .stars .off{color:var(--surface-2);text-shadow:none}
@@ -240,6 +242,8 @@ td.n{font-variant-numeric:tabular-nums;text-align:right} th.n{text-align:right}
 .sheet{background:var(--bg);color:var(--ink);border-radius:20px;max-width:760px;width:100%;padding:24px;display:grid;gap:16px;margin-block:auto;position:relative}
 .sheet h2{font-size:24px;padding-right:40px}
 .xbtn{position:absolute;top:14px;right:14px;width:38px;height:38px;border-radius:50%;border:0;background:var(--surface);cursor:pointer;font-size:20px;font-weight:800}
+.schema{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:8px}
+.schema svg{display:block;width:100%;height:auto}
 .steps{margin:0;padding-left:22px;display:grid;gap:8px}
 .steps li{padding-left:4px}
 .opt{display:flex;gap:12px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer}
@@ -364,8 +368,13 @@ function clean(t){
   return t.replace(/[«»“”„]/g,'"').replace(/[—–]/g,'-').replace(/…/g,'...').replace(/\s+/g,' ')
     .split('').filter(c => CHAR[c]).join('').replace(/ +/g,' ').trim();
 }
-function starsFor(acc){ return isKids() ? (acc>=95?3:acc>=88?2:acc>=75?1:0) : (acc>=97?3:acc>=94?2:acc>=90?1:0); }
+const MAX_ERRORS = 3;
+function starsFor(acc, miss){ return miss===0?3:miss<=2?2:miss<=MAX_ERRORS?1:0; }
 function starsText(n){ return '<span class="stars" aria-label="'+n+' из 3 звёзд">'+'★'.repeat(n)+'<span class="off">'+'★'.repeat(3-n)+'</span></span>'; }
+const PART_NAMES = ['разминка','сочетания','слова'], PART_NAMES_SP = ['разминка','практика','закрепление'];
+const unlocked = i => i===0 || !!(P().lessons[i-1]||{}).done || !!(P().lessons[i]||{}).done;
+function partsOf(i){ const L = P().lessons[i]||{}; return L.parts ? L.parts.slice() : (L.done ? [L.stars||1,L.stars||1,L.stars||1] : [0,0,0]); }
+function nextPart(i){ const n = partsOf(i).findIndex(x => x < 1); return n < 0 ? 0 : n; }
 const nextLesson = () => { const i = LESSONS.findIndex((l,i) => !(P().lessons[i]||{}).done); return i<0 ? LESSONS.length-1 : i; };
 const doneCount = () => LESSONS.filter((l,i) => (P().lessons[i]||{}).done).length;
 const bestCpm = () => P().history.reduce((m,h) => Math.max(m,h.cpm), 0);
@@ -378,7 +387,7 @@ function pushUntil(parts, target, gen){
   while (len < target && guard++ < 500){ let t = gen(); if (t===prev) continue; parts.push(t); prev = t; len += t.length+1; }
   return parts.join(' ');
 }
-function lessonText(i){
+function lessonText(i, part){
   const L = LESSONS[i], kids = isKids(), target = kids ? 70 : 170;
   if (L.sp === 'caps'){
     const w = DICT.filter(x=>x.length>2);
@@ -406,16 +415,22 @@ function lessonText(i){
   const nw = [...L.n], al = [...lettersUpTo(i)];
   const words = DICT.filter(w => [...w].every(c => al.includes(c)));
   const freshW = words.filter(w => nw.some(c => w.includes(c)));
+  const group = pNew => { const n = 2 + Math.floor(Math.random()*3); let t = ''; for (let k=0;k<n;k++) t += Math.random()<pNew ? rnd(nw) : rnd(al); return t; };
   const parts = [];
-  nw.forEach(c => parts.push(c.repeat(3)));
-  if (nw.length > 1) parts.push(nw.join('')+nw.join(''), nw.slice().reverse().join('')+nw.join(''));
+  if (part === 0){
+    nw.forEach(c => parts.push(c.repeat(3)));
+    if (nw.length > 1) parts.push(nw.join('')+nw.join(''), nw.slice().reverse().join('')+nw.join(''));
+    return pushUntil(parts, target, () => group(0.75));
+  }
+  if (part === 1){
+    const short = words.filter(w => w.length <= 4);
+    return pushUntil(parts, target, () => short.length >= 5 && Math.random() < 0.35 ? rnd(short) : group(0.5));
+  }
   return pushUntil(parts, target, () => {
     const r = Math.random();
-    if (freshW.length >= 3 && r < 0.5) return rnd(freshW);
-    if (words.length >= 6 && r < 0.7) return rnd(words);
-    const n = 2 + Math.floor(Math.random()*3); let t = '';
-    for (let k=0;k<n;k++) t += Math.random()<0.55 ? rnd(nw) : rnd(al);
-    return t;
+    if (freshW.length >= 3 && r < 0.55) return rnd(freshW);
+    if (words.length >= 6 && r < 0.85) return rnd(words);
+    return group(0.5);
   });
 }
 function weakLetters(){
@@ -426,11 +441,11 @@ function weakLetters(){
     .sort((a,b) => b[1]-a[1]).slice(0,5);
 }
 
-function makeCfg(kind, idx){
+function makeCfg(kind, idx, part){
   const kids = isKids();
   if (kind === 'lesson'){
-    const L = LESSONS[idx];
-    return {kind, idx, eyebrow:'Урок '+(idx+1)+' из '+LESSONS.length+' · '+L.row, title: kids ? L.kid+': '+L.show : L.t, text: clean(lessonText(idx))};
+    const L = LESSONS[idx]; part = part || 0;
+    return {kind, idx, part, eyebrow:'Урок '+(idx+1)+' из '+LESSONS.length+' · часть '+(part+1)+' из 3: '+(L.sp ? PART_NAMES_SP : PART_NAMES)[part], title: kids ? L.kid+': '+L.show : L.t, text: clean(lessonText(idx, part))};
   }
   if (kind === 'words'){
     const pool = kids ? KIDS_WORDS : DICT.filter(w=>w.length>2);
@@ -440,6 +455,15 @@ function makeCfg(kind, idx){
     if (kids) return {kind, eyebrow:'Практика', title:'Фразы', text: clean(shuffle(KIDS_PHRASES).slice(0,3).join(' '))};
     return {kind, eyebrow:'Практика', title:'Связный текст', text: clean(rnd(TEXTS))};
   }
+  if (kind === 'review'){
+    let last = -1; LESSONS.forEach((l,i) => { if ((P().lessons[i]||{}).done) last = i; });
+    const al = [...lettersUpTo(last)];
+    const pool = (kids ? KIDS_WORDS.concat(DICT) : DICT).filter(w => w.length > 1 && [...w].every(c => al.includes(c)));
+    const text = pushUntil([], kids?90:220, () => pool.length >= 6 && Math.random() < 0.8 ? rnd(pool) : rnd(al)+rnd(al)+rnd(al));
+    return {kind, eyebrow:'Практика', title:'Повторение пройденного', text: clean(text)};
+  }
+  if (kind === 'long')
+    return {kind, eyebrow:'Практика', title:'Длинный текст', text: clean(shuffle(TEXTS).slice(0,3).join(' '))};
   if (kind === 'test')
     return {kind, eyebrow:'Проверка', title:'Тест на одну минуту', text: clean(shuffle(TEXTS).join(' ')), timeLimit:60000};
   if (kind === 'weak'){
@@ -514,6 +538,8 @@ function handsHTML(){
   return s + '</svg>';
 }
 
+const SCHEMA_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" role="img" aria-label="Схема: какой палец нажимает какую клавишу"><g font-family="Manrope, 'Segoe UI', Arial, sans-serif"><g fill-opacity="0.75" aria-label="Лучи от пальцев к клавишам"><polygon points="150.5,244 204.5,244 153,462" fill="var(--f0, #F5CFD7)"/><polygon points="208.5,244 262.5,244 211,440" fill="var(--f1, #FADDBC)"/><polygon points="266.5,244 320.5,244 269,428" fill="var(--f2, #FBEEA8)"/><polygon points="324.5,244 436.5,244 327,443" fill="var(--f3, #CBEBC6)"/><polygon points="440.5,244 552.5,244 559,443" fill="var(--f4, #C3E6F2)"/><polygon points="556.5,244 610.5,244 617,428" fill="var(--f5, #D3D8FA)"/><polygon points="614.5,244 668.5,244 675,440" fill="var(--f6, #E6D0F5)"/><polygon points="672.5,244 726.5,244 733,462" fill="var(--f7, #F6CDE7)"/><polygon points="237.5,302 417,302 386,500" fill="var(--f8, #DCE1EA)"/><polygon points="417,302 596,302 500,500" fill="var(--f8, #DCE1EA)"/></g><g aria-label="Клавиатура"><g data-key="Ё" data-finger="0"><rect x="20" y="16" width="54" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="47" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ё</text></g><g data-key="1" data-finger="0"><rect x="78" y="16" width="54" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="105" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">1</text></g><g data-key="2" data-finger="1"><rect x="136" y="16" width="54" height="54" rx="8" fill="var(--f1, #FADDBC)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="163" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">2</text></g><g data-key="3" data-finger="2"><rect x="194" y="16" width="54" height="54" rx="8" fill="var(--f2, #FBEEA8)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="221" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">3</text></g><g data-key="4" data-finger="3"><rect x="252" y="16" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="279" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">4</text></g><g data-key="5" data-finger="3"><rect x="310" y="16" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="337" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">5</text></g><g data-key="6" data-finger="4"><rect x="368" y="16" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="395" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">6</text></g><g data-key="7" data-finger="4"><rect x="426" y="16" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="453" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">7</text></g><g data-key="8" data-finger="5"><rect x="484" y="16" width="54" height="54" rx="8" fill="var(--f5, #D3D8FA)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="511" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">8</text></g><g data-key="9" data-finger="6"><rect x="542" y="16" width="54" height="54" rx="8" fill="var(--f6, #E6D0F5)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="569" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">9</text></g><g data-key="0" data-finger="7"><rect x="600" y="16" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="627" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">0</text></g><g data-key="-" data-finger="7"><rect x="658" y="16" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="685" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">-</text></g><g data-key="=" data-finger="7"><rect x="716" y="16" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="743" y="50" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">=</text></g><g data-key="⌫" data-finger="7"><rect x="774" y="16" width="112" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="830" y="47" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">⌫</text></g><g data-key="Tab" data-finger="0"><rect x="20" y="74" width="83" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="61.5" y="105" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">Tab</text></g><g data-key="Й" data-finger="0"><rect x="107" y="74" width="54" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="134" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Й</text></g><g data-key="Ц" data-finger="1"><rect x="165" y="74" width="54" height="54" rx="8" fill="var(--f1, #FADDBC)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="192" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ц</text></g><g data-key="У" data-finger="2"><rect x="223" y="74" width="54" height="54" rx="8" fill="var(--f2, #FBEEA8)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="250" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">У</text></g><g data-key="К" data-finger="3"><rect x="281" y="74" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="308" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">К</text></g><g data-key="Е" data-finger="3"><rect x="339" y="74" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="366" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Е</text></g><g data-key="Н" data-finger="4"><rect x="397" y="74" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="424" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Н</text></g><g data-key="Г" data-finger="4"><rect x="455" y="74" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="482" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Г</text></g><g data-key="Ш" data-finger="5"><rect x="513" y="74" width="54" height="54" rx="8" fill="var(--f5, #D3D8FA)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="540" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ш</text></g><g data-key="Щ" data-finger="6"><rect x="571" y="74" width="54" height="54" rx="8" fill="var(--f6, #E6D0F5)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="598" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Щ</text></g><g data-key="З" data-finger="7"><rect x="629" y="74" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="656" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">З</text></g><g data-key="Х" data-finger="7"><rect x="687" y="74" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="714" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Х</text></g><g data-key="Ъ" data-finger="7"><rect x="745" y="74" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="772" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ъ</text></g><g data-key="\" data-finger="7"><rect x="803" y="74" width="83" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="844.5" y="108" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">\</text></g><g data-key="Caps" data-finger="0"><rect x="20" y="132" width="97.5" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="68.8" y="163" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">Caps</text></g><g data-key="Ф" data-finger="0"><rect x="121.5" y="132" width="54" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="148.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ф</text></g><g data-key="Ы" data-finger="1"><rect x="179.5" y="132" width="54" height="54" rx="8" fill="var(--f1, #FADDBC)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="206.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ы</text></g><g data-key="В" data-finger="2"><rect x="237.5" y="132" width="54" height="54" rx="8" fill="var(--f2, #FBEEA8)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="264.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">В</text></g><g data-key="А" data-finger="3"><rect x="295.5" y="132" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="322.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">А</text><path d="M 316.5 176 h 12" stroke="var(--ink, #151D2E)" stroke-width="3" stroke-linecap="round"/></g><g data-key="П" data-finger="3"><rect x="353.5" y="132" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="380.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">П</text></g><g data-key="Р" data-finger="4"><rect x="411.5" y="132" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="438.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Р</text></g><g data-key="О" data-finger="4"><rect x="469.5" y="132" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="496.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">О</text><path d="M 490.5 176 h 12" stroke="var(--ink, #151D2E)" stroke-width="3" stroke-linecap="round"/></g><g data-key="Л" data-finger="5"><rect x="527.5" y="132" width="54" height="54" rx="8" fill="var(--f5, #D3D8FA)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="554.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Л</text></g><g data-key="Д" data-finger="6"><rect x="585.5" y="132" width="54" height="54" rx="8" fill="var(--f6, #E6D0F5)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="612.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Д</text></g><g data-key="Ж" data-finger="7"><rect x="643.5" y="132" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--ink, #151D2E)" stroke-width="3"/><text x="670.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ж</text></g><g data-key="Э" data-finger="7"><rect x="701.5" y="132" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="728.5" y="166" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Э</text></g><g data-key="Enter" data-finger="7"><rect x="759.5" y="132" width="126.5" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="822.8" y="163" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">Enter</text></g><g data-key="Shift" data-finger="0"><rect x="20" y="190" width="126.5" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="83.3" y="221" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">Shift</text></g><g data-key="Я" data-finger="0"><rect x="150.5" y="190" width="54" height="54" rx="8" fill="var(--f0, #F5CFD7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="177.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Я</text></g><g data-key="Ч" data-finger="1"><rect x="208.5" y="190" width="54" height="54" rx="8" fill="var(--f1, #FADDBC)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="235.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ч</text></g><g data-key="С" data-finger="2"><rect x="266.5" y="190" width="54" height="54" rx="8" fill="var(--f2, #FBEEA8)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="293.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">С</text></g><g data-key="М" data-finger="3"><rect x="324.5" y="190" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="351.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">М</text></g><g data-key="И" data-finger="3"><rect x="382.5" y="190" width="54" height="54" rx="8" fill="var(--f3, #CBEBC6)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="409.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">И</text></g><g data-key="Т" data-finger="4"><rect x="440.5" y="190" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="467.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Т</text></g><g data-key="Ь" data-finger="4"><rect x="498.5" y="190" width="54" height="54" rx="8" fill="var(--f4, #C3E6F2)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="525.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ь</text></g><g data-key="Б" data-finger="5"><rect x="556.5" y="190" width="54" height="54" rx="8" fill="var(--f5, #D3D8FA)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="583.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Б</text></g><g data-key="Ю" data-finger="6"><rect x="614.5" y="190" width="54" height="54" rx="8" fill="var(--f6, #E6D0F5)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="641.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">Ю</text></g><g data-key="." data-finger="7"><rect x="672.5" y="190" width="54" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="699.5" y="224" text-anchor="middle" font-size="20" font-weight="800" fill="var(--ink, #151D2E)">.</text></g><g data-key="Shift" data-finger="7"><rect x="730.5" y="190" width="155.5" height="54" rx="8" fill="var(--f7, #F6CDE7)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="808.3" y="221" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">Shift</text></g><g data-key="Пробел" data-finger="8"><rect x="237.5" y="248" width="358.5" height="54" rx="8" fill="var(--f8, #DCE1EA)" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="416.8" y="279" text-anchor="middle" font-size="12" font-weight="600" fill="var(--muted, #5A6579)">Пробел</text></g></g><g aria-label="Кисти рук"><path d="M 193 565 C 188 549 165 541 151 522 Q 141 508 141 490 L 141 463 C 141 447 165 447 165 463 L 165 487 Q 165 493 174 493 L 197 493 L 197 441 C 197 422 225 422 225 441 L 225 486 Q 225 492 235 492 L 255 492 L 255 429 C 255 409 283 409 283 429 L 283 487 Q 283 493 293 493 L 313 493 L 313 444 C 313 425 341 425 341 444 L 341 509 Q 341 518 349 513 L 375 491 C 389 479 405 498 393 510 L 363 539 Q 350 551 341 565 Z" fill="var(--surface, #FFFFFF)" stroke="var(--ink, #151D2E)" stroke-width="2.5" stroke-linejoin="round"/><path d="M 193 565 C 188 549 165 541 151 522 Q 141 508 141 490 L 141 463 C 141 447 165 447 165 463 L 165 487 Q 165 493 174 493 L 197 493 L 197 441 C 197 422 225 422 225 441 L 225 486 Q 225 492 235 492 L 255 492 L 255 429 C 255 409 283 409 283 429 L 283 487 Q 283 493 293 493 L 313 493 L 313 444 C 313 425 341 425 341 444 L 341 509 Q 341 518 349 513 L 375 491 C 389 479 405 498 393 510 L 363 539 Q 350 551 341 565 Z" transform="translate(886 0) scale(-1 1)" fill="var(--surface, #FFFFFF)" stroke="var(--ink, #151D2E)" stroke-width="2.5" stroke-linejoin="round"/><circle cx="153" cy="462" r="8" fill="var(--f0, #F5CFD7)"/><circle cx="211" cy="440" r="8" fill="var(--f1, #FADDBC)"/><circle cx="269" cy="428" r="8" fill="var(--f2, #FBEEA8)"/><circle cx="327" cy="443" r="8" fill="var(--f3, #CBEBC6)"/><circle cx="559" cy="443" r="8" fill="var(--f4, #C3E6F2)"/><circle cx="617" cy="428" r="8" fill="var(--f5, #D3D8FA)"/><circle cx="675" cy="440" r="8" fill="var(--f6, #E6D0F5)"/><circle cx="733" cy="462" r="8" fill="var(--f7, #F6CDE7)"/><circle cx="386" cy="500" r="8" fill="var(--f8, #DCE1EA)"/><circle cx="500" cy="500" r="8" fill="var(--f8, #DCE1EA)"/></g><g font-size="12" fill="var(--muted, #5A6579)"><path d="M 153 414 V 449" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="153" y="408" transform="rotate(-48 153 408)">мизинец</text><path d="M 211 414 V 427" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="211" y="408" transform="rotate(-48 211 408)">безымянный</text><path d="M 269 414 V 415" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="269" y="408" transform="rotate(-48 269 408)">средний</text><path d="M 327 414 V 430" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="327" y="408" transform="rotate(-48 327 408)">указательный</text><path d="M 559 414 V 430" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="559" y="408" transform="rotate(-48 559 408)">указательный</text><path d="M 617 414 V 415" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="617" y="408" transform="rotate(-48 617 408)">средний</text><path d="M 675 414 V 427" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="675" y="408" transform="rotate(-48 675 408)">безымянный</text><path d="M 733 414 V 449" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="733" y="408" transform="rotate(-48 733 408)">мизинец</text><path d="M 386 515 V 540 M 500 515 V 540" stroke="var(--line, #CBD3E0)" stroke-width="1"/><text x="386" y="554" text-anchor="middle">большой</text><text x="500" y="554" text-anchor="middle">большой</text></g><g font-size="14" font-weight="800" fill="var(--ink, #151D2E)"><text x="193" y="589">Левая рука</text><text x="693" y="589" text-anchor="end">Правая рука</text></g></g></svg>`;
+
 /* ---------- шапка ---------- */
 let view = 'home';
 function renderTop(){
@@ -542,7 +568,7 @@ function renderWelcome(){
       <button class="choice" data-act="mode" data-m="adult">
         <div class="pic" style="padding:10px">${kbHTML({home:true}).replace('class="kb"','class="kb" style="min-width:0;--ks:20px;width:100%;padding:6px;gap:3px"')}</div>
         <h2>Для взрослых</h2>
-        <ul><li>20 уроков от основного ряда до цифр</li><li>Скорость, точность и трудные буквы</li><li>Связные тексты, тест на минуту, свой текст</li></ul>
+        <ul><li>20 уроков по три части, от основного ряда до цифр</li><li>Скорость, точность и трудные буквы</li><li>Связные тексты, тест на минуту, свой текст</li></ul>
         <span class="go">Начать →</span>
       </button>
       <button class="choice kidsc" data-act="mode" data-m="kids">
@@ -564,22 +590,24 @@ function renderHome(){
   LESSONS.forEach((L,i) => { let g = groups.find(x=>x.row===L.row); if (!g) groups.push(g = {row:L.row, items:[]}); g.items.push(i); });
   const card = i => {
     const L = LESSONS[i], r = p.lessons[i] || {};
-    const st = r.done ? (k ? starsText(r.stars||0) : starsText(r.stars||0)+' · '+r.best+' зн/мин') : (i===ni ? 'Следующий' : 'Не пройден');
-    return `<button class="lcard ${r.done?'done':''} ${i===ni?'next':''}" data-act="lesson" data-i="${i}">
+    const open = unlocked(i), pd = partsOf(i).filter(x => x >= 1).length;
+    const st = r.done ? (k ? starsText(r.stars||0) : starsText(r.stars||0)+' · '+r.best+' зн/мин') : !open ? 'Откроется после урока '+i : pd ? 'Пройдено частей: '+pd+' из 3' : (i===ni ? 'Следующий' : 'Не пройден');
+    return `<button class="lcard ${r.done?'done':''} ${i===ni?'next':''} ${open?'':'locked'}" ${open?`data-act="lesson" data-i="${i}"`:'disabled'}>
       <span class="num">Урок ${i+1}</span><span class="ltr">${L.show}</span>${k?`<span class="nm">${L.kid}</span>`:''}<span class="st">${st}</span></button>`;
   };
   const weak = weakLetters();
   const pc = (act,t,d) => `<button class="pcard" data-act="${act}"><h3>${t}</h3><p>${d}</p></button>`;
+  const review = dc >= 2 ? pc('review','Повторение пройденного', k ? 'Слова только из букв, которые ты уже знаешь' : 'Слова только из букв пройденных уроков') : '';
   const practice = k
-    ? pc('words','Слова','Десять коротких слов: кот, дом, мяч…') + pc('text','Фразы','Три весёлые фразы подряд') + pc('game','Игра «Шарики»','Лопай шарики, нажимая буквы на них') + (weak.length ? pc('weak','Трудные буквы', 'Потренируй: '+weak.map(x=>x[0].toUpperCase()).join(' ')) : '')
-    : pc('words','Случайные слова','Около 30 слов на все буквы алфавита') + pc('text','Связный текст','Абзац с заглавными буквами и знаками препинания') + pc('test','Тест на одну минуту','Узнайте свою скорость за 60 секунд') + pc('custom','Свой текст','Вставьте любой текст и печатайте его') + pc('game','Игра «Шарики»','Разминка на реакцию: буквы на шариках') + (weak.length ? pc('weak','Трудные буквы','Больше всего ошибок: '+weak.map(x=>x[0].toUpperCase()).join(' ')) : '');
+    ? review + pc('words','Слова','Десять коротких слов: кот, дом, мяч…') + pc('text','Фразы','Три весёлые фразы подряд') + pc('game','Игра «Шарики»','Лопай шарики, нажимая буквы на них') + (weak.length ? pc('weak','Трудные буквы', 'Потренируй: '+weak.map(x=>x[0].toUpperCase()).join(' ')) : '')
+    : review + pc('words','Случайные слова','Около 30 слов на все буквы алфавита') + pc('text','Связный текст','Абзац с заглавными буквами и знаками препинания') + pc('long','Длинный текст','Три абзаца подряд на выносливость') + pc('test','Тест на одну минуту','Узнайте свою скорость за 60 секунд') + pc('custom','Свой текст','Вставьте любой текст и печатайте его') + pc('game','Игра «Шарики»','Разминка на реакцию: буквы на шариках') + (weak.length ? pc('weak','Трудные буквы','Больше всего ошибок: '+weak.map(x=>x[0].toUpperCase()).join(' ')) : '');
   const touch = matchMedia('(pointer:coarse)').matches && !matchMedia('(pointer:fine)').matches;
   app.innerHTML = `
   <section class="hero">
     <div class="hero-txt">
       <p class="eyebrow">${k ? 'Детский режим' : 'Слепая печать на русском'}</p>
       <h1>${k ? (dc ? 'С возвращением! Продолжим?' : 'Привет! Научимся печатать всеми пальчиками') : (dc ? 'Продолжим занятия' : 'Начнём с основного ряда')}</h1>
-      <p class="lead">${k ? 'Проходи уроки по порядку и собирай звёздочки. Каждый пальчик живёт в своём цветном домике на клавиатуре.' : 'Уроки идут по порядку: каждый добавляет одну-две новые буквы. Внизу экрана подсказка покажет, каким пальцем нажимать клавишу.'}</p>
+      <p class="lead">${k ? 'В каждом уроке три части. Ошибиться можно не больше 3 раз, тогда откроется следующий урок. Каждый пальчик живёт в своём цветном домике на клавиатуре.' : 'Каждый урок добавляет одну-две буквы и состоит из трёх частей: разминка, сочетания, слова. Часть засчитана при 3 ошибках или меньше. Следующий урок открывается после зачёта.'}</p>
       <div class="row"><button class="btn big" data-act="lesson" data-i="${ni}">${dc ? 'Продолжить' : 'Начать'}: урок ${ni+1}</button><button class="btn ghost" data-act="guide">Как держать руки</button></div>
     </div>
     <div class="summary">
@@ -711,13 +739,15 @@ function finish(){
   s.done = true; clearInterval(timer);
   const ms = Math.max(1000, elapsed()), tot = s.hits + s.miss;
   const r = {cpm: Math.round(s.hits/(ms/60000)), acc: tot ? Math.round(s.hits/tot*1000)/10 : 100, ms, miss: s.miss, errMap: s.errMap, cfg: s};
-  r.stars = starsFor(r.acc);
+  r.stars = starsFor(r.acc, r.miss);
   const p = P(), prevBest = bestCpm();
   r.record = p.history.length > 0 && r.cpm > prevBest && r.acc >= 90;
   if (s.kind === 'lesson'){
-    const L = p.lessons[s.idx] || {};
-    r.prevStars = L.stars || 0;
-    p.lessons[s.idx] = {done: L.done || r.stars >= 1, stars: Math.max(L.stars||0, r.stars), best: Math.max(L.best||0, r.stars>=1 ? r.cpm : 0), acc: Math.max(L.acc||0, r.acc)};
+    const L = p.lessons[s.idx] || {}, parts = partsOf(s.idx);
+    parts[s.part] = Math.max(parts[s.part], r.stars);
+    const done = parts.every(x => x >= 1);
+    p.lessons[s.idx] = {parts, done, stars: done ? Math.min(...parts) : 0, best: Math.max(L.best||0, r.stars>=1 ? r.cpm : 0), acc: Math.max(L.acc||0, r.acc)};
+    r.lessonDone = done;
   }
   p.history.push({d: Date.now(), t: s.title, cpm: r.cpm, acc: r.acc});
   if (p.history.length > 300) p.history.splice(0, p.history.length - 300);
@@ -733,15 +763,22 @@ function renderResult(r){
   const passed = r.stars >= 1;
   let head, sub = '';
   if (k) head = ['Попробуем ещё раз?','Хорошо!','Отлично!','Великолепно!'][r.stars];
-  else if (isLesson) head = passed ? 'Урок пройден' : 'Почти получилось';
+  else if (isLesson) head = passed ? (r.lessonDone && c.part === 2 ? 'Урок пройден' : 'Часть пройдена') : 'Почти получилось';
   else head = 'Готово';
-  if (!passed && !k && isLesson) sub = 'Для зачёта нужна точность от 90%. Не спешите: скорость придёт сама, когда уйдут ошибки.';
-  if (!passed && k) sub = 'Не торопись и смотри на подсказку внизу. У тебя всё получится!';
+  if (!passed && !k && isLesson) sub = 'Для зачёта допускается не больше ' + MAX_ERRORS + ' ошибок. Не спешите: скорость придёт сама, когда уйдут ошибки.';
+  if (!passed && k) sub = 'Можно ошибиться не больше ' + MAX_ERRORS + ' раз. Не торопись и смотри на подсказку внизу. У тебя всё получится!';
   if (c.kind === 'test') sub = 'Средняя скорость при слепой печати — 150–250 знаков в минуту, у опытных — от 300.';
   const errs = Object.entries(r.errMap).sort((a,b) => b[1]-a[1]).slice(0,8);
   const hasNext = isLesson && c.idx < LESSONS.length-1;
-  const primary = (isLesson && passed && hasNext) ? `<button class="btn big" data-act="lesson" data-i="${c.idx+1}">Следующий урок →</button>` : `<button class="btn big" data-act="again">Ещё раз</button>`;
-  const secondary = (isLesson && passed && hasNext) ? `<button class="btn ghost" data-act="again">Повторить урок</button>` : (hasNext ? `<button class="btn ghost" data-act="lesson" data-i="${c.idx+1}">Всё равно дальше</button>` : '');
+  const againBtn = (cls, t) => `<button class="btn ${cls}" data-act="again">${t}</button>`;
+  let primary = againBtn('big','Ещё раз'), secondary = '', enterHint = 'ещё раз';
+  if (isLesson && passed && c.part < 2){
+    primary = `<button class="btn big" data-act="lesson" data-i="${c.idx}" data-p="${c.part+1}">Дальше: часть ${c.part+2} из 3 →</button>`;
+    secondary = againBtn('ghost','Повторить часть'); enterHint = 'следующая часть';
+  } else if (isLesson && passed && r.lessonDone && hasNext){
+    primary = `<button class="btn big" data-act="lesson" data-i="${c.idx+1}">Следующий урок →</button>`;
+    secondary = againBtn('ghost','Повторить часть'); enterHint = 'следующий урок';
+  }
   app.innerHTML = `<section class="result">
     ${k ? catSVG('cat') : ''}
     <p class="eyebrow">${esc(c.title)}</p>
@@ -757,7 +794,7 @@ function renderResult(r){
     </div>
     ${errs.length ? `<p class="muted small">${k?'Где были ошибки':'Ошибки по клавишам'}</p><div class="chips">${errs.map(([ch,n]) => `<span class="chip">${ch===' '?'Пробел':esc(ch)} × ${n}</span>`).join('')}</div>` : ''}
     <div class="row" style="justify-content:center">${primary}${secondary}<button class="btn ghost" data-act="home">${k?'К урокам':'Все уроки'}</button></div>
-    <p class="muted small">Enter — ${primary.includes('Следующий') ? 'следующий урок' : 'ещё раз'}</p>
+    <p class="muted small">Enter — ${enterHint}</p>
   </section>`;
 }
 
@@ -890,7 +927,8 @@ const modalOpen = () => !$('#modal').hidden;
 function openGuide(){
   const k = isKids();
   openModal(`<h2>${k ? 'Как держать ручки' : 'Как держать руки'}</h2>
-    ${kbHTML({home:true})}
+    <div class="schema">${SCHEMA_SVG}</div>
+    <p class="muted small">${k ? 'Цветной лучик показывает, какие клавиши нажимает каждый пальчик.' : 'Цветной луч показывает, за какие клавиши отвечает каждый палец. Клавиши исходной позиции обведены.'}</p>
     <ol class="steps">
       <li>${k ? 'Найди на клавиатуре буквы А и О. На них есть маленькие бугорки. Положи на них указательные пальчики.' : 'Найдите на клавиатуре буквы А и О: на них есть небольшие выступы. Положите на них указательные пальцы.'}</li>
       <li>${k ? 'Остальные пальчики лягут рядом: левая рука на Ф Ы В А, правая на О Л Д Ж.' : 'Остальные пальцы лягут рядом: левая рука на Ф Ы В А, правая на О Л Д Ж. Это исходная позиция.'}</li>
@@ -899,7 +937,6 @@ function openGuide(){
       <li>${k ? 'Смотри на экран, а не на клавиатуру. Подсказка внизу всегда покажет нужный пальчик.' : 'Смотрите на экран, а не на клавиатуру. Если забыли, где клавиша, — подсказка внизу покажет её и нужный палец.'}</li>
       <li>${k ? 'Перед началом включи русский язык на компьютере.' : 'Перед началом включите русскую раскладку: Alt+Shift или Win+Пробел (на Mac — Ctrl+Пробел).'}</li>
     </ol>
-    ${handsHTML()}
     <div class="row"><button class="btn" data-act="close-start">${k ? 'Понятно, начинаем!' : 'Понятно, к урокам'}</button></div>`);
   S.seenGuide = true; save();
 }
@@ -939,8 +976,8 @@ function act(a, d){
     case 'settings': openSettings(); break;
     case 'close': closeModal(); break;
     case 'close-start': closeModal(); break;
-    case 'lesson': closeModal(); startSession(makeCfg('lesson', +d.i)); break;
-    case 'words': case 'text': case 'test': case 'weak': startSession(makeCfg(a)); break;
+    case 'lesson': { const i = +d.i; if (!unlocked(i)) return; closeModal(); startSession(makeCfg('lesson', i, d.p != null ? +d.p : nextPart(i))); break; }
+    case 'words': case 'text': case 'test': case 'weak': case 'review': case 'long': startSession(makeCfg(a)); break;
     case 'custom': openCustom(); break;
     case 'custom-go': {
       const v = clean($('#customIn').value);
@@ -949,7 +986,7 @@ function act(a, d){
     }
     case 'restart': case 'again': {
       const c = a === 'again' ? lastResult.cfg : SES;
-      startSession(c.kind === 'custom' ? makeCfg('custom') : makeCfg(c.kind, c.idx)); break;
+      startSession(c.kind === 'custom' ? makeCfg('custom') : makeCfg(c.kind, c.idx, c.part)); break;
     }
     case 'focus': window.focus(); checkFocus(); break;
     case 'game': renderGame(); break;
